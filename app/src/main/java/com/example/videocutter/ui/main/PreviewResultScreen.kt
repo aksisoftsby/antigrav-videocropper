@@ -415,11 +415,13 @@ fun SuccessPreviewLayout(
       Spacer(modifier = Modifier.height(16.dp))
 
       // Media3 Video Previewer
+      // IMPORTANT: PlayerView uses SurfaceView by default, which renders on a separate
+      // hardware layer and cannot be clipped by Compose. We attach a TextureView instead
+      // so that rounded corners and Compose modifiers work correctly.
       AndroidView(
         factory = { ctx ->
-          PlayerView(ctx).apply {
-            player = exoPlayer
-            useController = true
+          android.view.TextureView(ctx).also { textureView ->
+            exoPlayer.setVideoTextureView(textureView)
           }
         },
         modifier = Modifier
@@ -457,7 +459,7 @@ fun SuccessPreviewLayout(
             color = MaterialTheme.colorScheme.onSurface
           )
           Text(
-            text = ".../files/VideoCutter/$fileName",
+            text = "Movies/VideoCutter/$fileName",
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
           )
