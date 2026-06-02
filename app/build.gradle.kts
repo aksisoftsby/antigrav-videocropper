@@ -8,7 +8,7 @@ android {
     namespace = "com.example.videocutter"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.example.videocutter"
+        applicationId = "com.aksisoft.videocutter"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
@@ -81,4 +81,11 @@ dependencies {
   implementation(libs.androidx.navigation3.ui)
   implementation(libs.androidx.navigation3.runtime)
   implementation(libs.androidx.lifecycle.viewmodel.navigation3)
+
+  // Media3
+  implementation(libs.media3.exoplayer)
+  implementation(libs.media3.ui)
+  implementation(libs.media3.transformer)
+  implementation(libs.media3.effect)
+  implementation(libs.media3.common)
 }
