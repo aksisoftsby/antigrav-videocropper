@@ -40,7 +40,12 @@ fun MainNavigation() {
             videoUri = key.videoUri,
             cropPercentage = key.cropPercentage,
             onBack = { backStack.removeLastOrNull() },
-            onReset = { backStack.removeUntil(ChooseVideo) },
+            //onReset = { backStack.removeUntil(ChooseVideo) },
+            onReset = {
+              while (backStack.lastOrNull() !is ChooseVideo) {
+                backStack.removeLastOrNull()
+              }
+            },
             modifier = Modifier.safeDrawingPadding().padding(16.dp)
           )
         }

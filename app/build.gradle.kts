@@ -88,4 +88,7 @@ dependencies {
   implementation(libs.media3.transformer)
   implementation(libs.media3.effect)
   implementation(libs.media3.common)
+
+  // Icons
+  implementation(libs.androidx.compose.material.icons.core)
 }
