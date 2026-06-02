@@ -75,8 +75,7 @@ sealed interface ProcessingState {
   data class Error(val message: String) : ProcessingState
 }
 
-@OptIn(UnstableApi::class)
-@ExperimentalMaterial3Api
+@OptIn(UnstableApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun PreviewResultScreen(
   videoUri: String,
