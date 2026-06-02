@@ -1,6 +1,12 @@
 package com.example.videocutter.ui.main
 
+import android.content.ContentValues
+import android.content.Context
+import android.media.MediaScannerConnection
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -23,7 +29,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -64,15 +69,78 @@ import androidx.media3.transformer.Transformer
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.job
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.coroutines.resume
 
 sealed interface ProcessingState {
   data class Processing(val progress: Float) : ProcessingState
-  data class Success(val outputPath: String, val fileName: String) : ProcessingState
+  data class Success(
+    val outputPath: String,
+    val fileName: String,
+    val galleryUri: Uri?
+  ) : ProcessingState
   data class Error(val message: String) : ProcessingState
+}
+
+/**
+ * Moves the freshly-encoded temp file into the public gallery:
+ *  - Android 10+: inserts via MediaStore with IS_PENDING so the gallery
+ *    doesn't show a partial file while the copy is in progress.
+ *  - Android 9-: copies to Movies/VideoCutter and triggers a media scan.
+ *
+ * Returns the gallery URI on success, null on failure (file is still
+ * readable at [tempPath] in that case).
+ */
+private suspend fun saveToGallery(context: Context, tempPath: String, fileName: String): Uri? {
+  val tempFile = File(tempPath)
+  return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+    val resolver = context.contentResolver
+    val cv = ContentValues().apply {
+      put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
+      put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+      put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/VideoCutter")
+      put(MediaStore.Video.Media.IS_PENDING, 1)
+    }
+    val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv) ?: return null
+    try {
+      resolver.openOutputStream(uri)?.use { out ->
+        tempFile.inputStream().use { it.copyTo(out) }
+      }
+      cv.clear()
+      cv.put(MediaStore.Video.Media.IS_PENDING, 0)
+      resolver.update(uri, cv, null, null)
+      tempFile.delete()
+      uri
+    } catch (e: Exception) {
+      resolver.delete(uri, null, null)
+      null
+    }
+  } else {
+    @Suppress("DEPRECATION")
+    val publicDir = File(
+      Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+      "VideoCutter"
+    ).also { it.mkdirs() }
+    val dest = File(publicDir, fileName)
+    try {
+      tempFile.copyTo(dest, overwrite = true)
+      tempFile.delete()
+      // Trigger media scanner so gallery picks it up immediately
+      suspendCancellableCoroutine { cont ->
+        MediaScannerConnection.scanFile(
+          context,
+          arrayOf(dest.absolutePath),
+          arrayOf("video/mp4")
+        ) { _, scannedUri -> cont.resume(scannedUri) }
+      }
+    } catch (e: Exception) {
+      null
+    }
+  }
 }
 
 @OptIn(UnstableApi::class)
@@ -91,13 +159,13 @@ fun PreviewResultScreen(
     processingState = ProcessingState.Processing(0f)
 
     val inputUri = Uri.parse(videoUri)
-    val outputFolder = File(context.getExternalFilesDir(null), "VideoCutter").apply {
-      if (!exists()) mkdirs()
-    }
+    // Write the encoded file to a temp location in app-private cache first.
+    // After encoding we move it into MediaStore so it appears in the gallery.
+    val tempDir = context.cacheDir.also { it.mkdirs() }
     val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
     val outputFileName = "Cropped_${cropPercentage}pct_${timestamp}.mp4"
-    val outputFile = File(outputFolder, outputFileName)
-    val outputPath = outputFile.absolutePath
+    val tempFile = File(tempDir, outputFileName)
+    val outputPath = tempFile.absolutePath
 
     // Crop Bottom P%:
     // Height coordinate system goes from -1.0f (bottom) to 1.0f (top) (span of 2.0f).
@@ -120,7 +188,8 @@ fun PreviewResultScreen(
     val transformer = Transformer.Builder(context)
       .addListener(object : Transformer.Listener {
         override fun onCompleted(composition: Composition, exportResult: ExportResult) {
-          processingState = ProcessingState.Success(outputPath, outputFile.name)
+          // Mark as success with the temp path first; gallery move happens below
+          processingState = ProcessingState.Success(outputPath, outputFileName, null)
         }
 
         override fun onError(
@@ -141,6 +210,11 @@ fun PreviewResultScreen(
       while (true) {
         val currentState = processingState
         if (currentState is ProcessingState.Success || currentState is ProcessingState.Error) {
+          // Move encoded file into gallery now that encoding is done
+          if (currentState is ProcessingState.Success) {
+            val galleryUri = saveToGallery(context, outputPath, outputFileName)
+            processingState = currentState.copy(galleryUri = galleryUri)
+          }
           break
         }
         val progressState = transformer.getProgress(progressHolder)
@@ -238,7 +312,7 @@ fun PreviewResultScreen(
         }
         is ProcessingState.Success -> {
           SuccessPreviewLayout(
-            outputPath = state.outputPath,
+            playbackUri = state.galleryUri ?: Uri.fromFile(File(state.outputPath)),
             fileName = state.fileName,
             onBack = onBack,
             onReset = onReset
@@ -287,7 +361,7 @@ fun PreviewResultScreen(
 
 @Composable
 fun SuccessPreviewLayout(
-  outputPath: String,
+  playbackUri: Uri,
   fileName: String,
   onBack: () -> Unit,
   onReset: () -> Unit
@@ -295,9 +369,9 @@ fun SuccessPreviewLayout(
   val context = LocalContext.current
 
   // Instantiate and control the ExoPlayer
-  val exoPlayer = remember(outputPath) {
+  val exoPlayer = remember(playbackUri) {
     ExoPlayer.Builder(context).build().apply {
-      setMediaItem(MediaItem.fromUri(Uri.fromFile(File(outputPath))))
+      setMediaItem(MediaItem.fromUri(playbackUri))
       prepare()
       playWhenReady = true
     }
